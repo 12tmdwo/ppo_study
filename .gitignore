@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 강화학습 학습 기록 (체크포인트, 텐서보드)
+logs/
