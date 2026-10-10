@@ -2,7 +2,7 @@
 
 실행: pytest ppo/test_plot_compare.py
 """
-from plot_compare import find_runs, passed
+from plot_compare import find_runs, mean_curve, passed
 
 
 def test_find_runs_picks_latest_per_seed(tmp_path):
@@ -24,3 +24,14 @@ def test_passed_thresholds():
     assert passed(4.92, 300.0)
     assert not passed(4.49, 300.0)
     assert not passed(4.92, 289.9)
+
+
+def test_mean_curve_aligns_by_iteration_number():
+    # 씨앗값마다 기록이 시작되는 반복 번호가 다를 수 있다. 같은 반복 번호끼리 평균을 내야 한다.
+    first = ([0, 1, 2, 3], [10.0, 20.0, 30.0, 40.0])
+    second = ([1, 2, 3], [0.0, 10.0, 20.0])
+    assert mean_curve([first, second]) == ([1, 2, 3], [10.0, 20.0, 30.0])
+
+
+def test_mean_curve_without_common_iterations():
+    assert mean_curve([([0], [1.0]), ([5], [2.0])]) == ([], [])

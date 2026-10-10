@@ -33,7 +33,10 @@ def test_evaluate_action_matches_torch():
     log_prob, entropy = evaluate_action(mean, std, action)
     dist = Normal(mean, std)
     assert log_prob.shape == (6,), "log_prob은 행동 개수(A) 방향으로 더해서 (N,) 모양이어야 합니다."
-    assert entropy.shape == (6,), "entropy도 A 방향으로 더해서 (N,) 모양이어야 합니다."
+    assert entropy.shape == (6,), (
+        "entropy 모양이 (N,)이 아닙니다. std가 (A,) 모양일 때는 std.expand_as(mean)으로 (N, A) 모양으로 넓힌 뒤에 "
+        "계산하고, A 방향으로 더하세요."
+    )
     assert torch.allclose(log_prob, dist.log_prob(action).sum(-1), atol=1e-5), "로그 확률 수식을 확인하세요."
     assert torch.allclose(entropy, dist.entropy().sum(-1), atol=1e-5), "엔트로피 수식을 확인하세요."
 
@@ -43,6 +46,7 @@ def test_evaluate_action_accepts_per_env_std():
     mean, std, action = torch.randn(6, 3), torch.rand(6, 3) + 0.1, torch.randn(6, 3)
     log_prob, entropy = evaluate_action(mean, std, action)
     dist = Normal(mean, std)
+    assert log_prob.shape == (6,) and entropy.shape == (6,)
     assert torch.allclose(log_prob, dist.log_prob(action).sum(-1), atol=1e-5)
     assert torch.allclose(entropy, dist.entropy().sum(-1), atol=1e-5)
 
@@ -128,6 +132,14 @@ def test_gae_done_blocks_next_value():
     dones = torch.tensor([[1.0], [0.0]])
     adv, _ = compute_gae(rewards, values, dones, torch.tensor([7.0]), gamma=1.0, lam=0.0)
     assert torch.allclose(adv, torch.tensor([[-1.0], [2.0]])), "판이 끝난 걸음에서는 다음 가치를 0으로 봐야 합니다."
+
+
+def test_gae_done_at_last_step_ignores_last_value():
+    # 마지막 걸음에서 판이 끝났다. 이때는 last_values(7)를 쓰면 안 된다.
+    values = torch.tensor([[1.0], [5.0]])
+    dones = torch.tensor([[0.0], [1.0]])
+    adv, _ = compute_gae(torch.zeros(2, 1), values, dones, torch.tensor([7.0]), gamma=1.0, lam=0.0)
+    assert torch.allclose(adv, torch.tensor([[4.0], [-5.0]])), "마지막 걸음에서 판이 끝났으면 last_values를 0으로 봐야 합니다."
 
 
 def test_gae_lambda_zero_is_one_step_error():
@@ -254,46 +266,50 @@ def _lr(optimizer):
     return optimizer.param_groups[0]["lr"]
 
 
+def _same(a, b):
+    return math.isclose(a, b, rel_tol=1e-6)
+
+
 def test_adapt_learning_rate_lowers_when_change_too_big():
     optimizer = _optimizer(1e-3)
     new_lr = adapt_learning_rate(optimizer, approx_kl=0.03, desired_kl=0.01)  # 0.03 > 0.01 * 2
-    assert math.isclose(_lr(optimizer), 1e-3 / LR_FACTOR), "KL이 목표의 2배보다 크면 학습 속도를 LR_FACTOR로 나눠야 합니다."
-    assert math.isclose(new_lr, _lr(optimizer)), "조절한 뒤의 학습 속도를 돌려줘야 합니다."
+    assert _same(_lr(optimizer), 1e-3 / LR_FACTOR), "KL이 목표의 2배보다 크면 학습 속도를 LR_FACTOR로 나눠야 합니다."
+    assert _same(new_lr, _lr(optimizer)), "조절한 뒤의 학습 속도를 돌려줘야 합니다."
 
 
 def test_adapt_learning_rate_raises_when_change_too_small():
     optimizer = _optimizer(1e-3)
     adapt_learning_rate(optimizer, approx_kl=0.001, desired_kl=0.01)  # 0 < 0.001 < 0.01 / 2
-    assert math.isclose(_lr(optimizer), 1e-3 * LR_FACTOR), "KL이 목표의 절반보다 작으면 학습 속도에 LR_FACTOR를 곱해야 합니다."
+    assert _same(_lr(optimizer), 1e-3 * LR_FACTOR), "KL이 목표의 절반보다 작으면 학습 속도에 LR_FACTOR를 곱해야 합니다."
 
 
 def test_adapt_learning_rate_keeps_when_change_is_fine():
     for kl in (0.01, 0.02, 0.005, 0.0):  # 목표 근처, 경계값 두 개, 아직 신경망이 안 바뀐 경우(0)
         optimizer = _optimizer(1e-3)
         adapt_learning_rate(optimizer, approx_kl=kl, desired_kl=0.01)
-        assert _lr(optimizer) == 1e-3, f"KL이 {kl}일 때는 학습 속도를 바꾸지 않아야 합니다."
+        assert _same(_lr(optimizer), 1e-3), f"KL이 {kl}일 때는 학습 속도를 바꾸지 않아야 합니다."
 
 
 def test_adapt_learning_rate_respects_limits():
     optimizer = _optimizer(LR_MAX)
     adapt_learning_rate(optimizer, approx_kl=0.001, desired_kl=0.01)
-    assert _lr(optimizer) == LR_MAX, "학습 속도는 LR_MAX보다 커지면 안 됩니다."
+    assert _same(_lr(optimizer), LR_MAX), "학습 속도는 LR_MAX보다 커지면 안 됩니다."
     optimizer = _optimizer(LR_MIN)
     adapt_learning_rate(optimizer, approx_kl=0.5, desired_kl=0.01)
-    assert _lr(optimizer) == LR_MIN, "학습 속도는 LR_MIN보다 작아지면 안 됩니다."
+    assert _same(_lr(optimizer), LR_MIN), "학습 속도는 LR_MIN보다 작아지면 안 됩니다."
 
 
 def test_adapt_learning_rate_off_without_target():
     optimizer = _optimizer(1e-3)
     new_lr = adapt_learning_rate(optimizer, approx_kl=0.5, desired_kl=None)
-    assert _lr(optimizer) == 1e-3 and new_lr == 1e-3, "desired_kl이 None이면 아무것도 바꾸지 않아야 합니다."
+    assert _same(_lr(optimizer), 1e-3) and _same(new_lr, 1e-3), "desired_kl이 None이면 아무것도 바꾸지 않아야 합니다."
 
 
 def test_adapt_learning_rate_applies_to_every_group():
     first, second = torch.nn.Parameter(torch.zeros(1)), torch.nn.Parameter(torch.zeros(1))
     optimizer = torch.optim.Adam([{"params": [first]}, {"params": [second]}], lr=1e-3)
     adapt_learning_rate(optimizer, approx_kl=0.03, desired_kl=0.01)
-    assert all(math.isclose(group["lr"], 1e-3 / LR_FACTOR) for group in optimizer.param_groups), \
+    assert all(_same(group["lr"], 1e-3 / LR_FACTOR) for group in optimizer.param_groups), \
         "optimizer.param_groups의 모든 묶음에 새 학습 속도를 넣어야 합니다."
 
 
@@ -419,4 +435,68 @@ def test_update_changes_learning_rate_by_kl():
     msg = "ppo_update 안에서 미니배치마다 adapt_learning_rate를 불러야 합니다."
     assert run(-1.0, 0.01) < 1e-3, "KL이 클 때 학습 속도가 내려가야 합니다. " + msg
     assert run(-0.01, 0.01) > 1e-3, "KL이 아주 작을 때 학습 속도가 올라가야 합니다. " + msg
-    assert run(-1.0, None) == 1e-3, "cfg.desired_kl이 None이면 학습 속도가 그대로여야 합니다."
+    assert _same(run(-1.0, None), 1e-3), "cfg.desired_kl이 None이면 학습 속도가 그대로여야 합니다."
+
+
+def test_update_changes_learning_rate_every_minibatch():
+    torch.manual_seed(0)
+    actor, critic, optimizer = _models()
+    batch = _batch(actor, torch.randn(64, 4))
+    batch["log_probs"] = batch["log_probs"] - 1.0  # KL이 계속 아주 크다 -> 미니배치 4개에서 네 번 내려가야 한다
+    ppo_update(actor, critic, optimizer, batch, PPOConfig(num_epochs=1, desired_kl=0.01))
+    assert _same(optimizer.param_groups[0]["lr"], 1e-3 / LR_FACTOR ** 4), \
+        "adapt_learning_rate를 미니배치마다 한 번씩 불러야 합니다 (반복이 끝난 뒤에 한 번만 부르면 안 됩니다)."
+
+
+def test_update_fits_value_targets():
+    # 가짜 문제: 관찰값이 +1이면 목표 가치 +3, -1이면 -3. 여러 번 고치면 가치 신경망이 이 차이를 배워야 한다.
+    torch.manual_seed(0)
+    actor, critic, optimizer = _models(obs_dim=1, lr=1e-2)
+    obs = torch.randn(256, 1).sign()
+    for _ in range(20):
+        batch = _batch(actor, obs)
+        batch["returns"] = 3.0 * obs.squeeze(-1)
+        ppo_update(actor, critic, optimizer, batch, PPOConfig(desired_kl=None))
+    gap = (critic(torch.ones(1, 1)) - critic(-torch.ones(1, 1))).item()
+    assert gap > 3.0, (
+        f"가치 신경망이 목표값을 배우지 못했습니다 (차이 {gap:.2f}, 기대 6). "
+        "obs, actions, log_probs, advantages, returns 다섯 개를 모두 같은 인덱스로 골랐는지 확인하세요."
+    )
+
+
+def test_update_does_not_accumulate_gradients():
+    # 학습 속도가 0이면 신경망이 바뀌지 않으므로, 전체 배치로 두 번 구한 기울기는 같아야 한다.
+    torch.manual_seed(0)
+    actor, critic, _ = _models()
+    params = list(actor.parameters()) + list(critic.parameters())
+    optimizer = torch.optim.SGD(params, lr=0.0)
+    grads, real_step = [], optimizer.step
+
+    def step(*args, **kwargs):  # optimizer.step()이 불릴 때마다 그 순간의 기울기를 기록한다
+        grads.append(torch.cat([p.grad.flatten().clone() for p in params]))
+        return real_step(*args, **kwargs)
+
+    optimizer.step = step
+    ppo_update(actor, critic, optimizer, _batch(actor, torch.randn(64, 4)),
+               PPOConfig(num_epochs=2, num_mini_batches=1, max_grad_norm=1e9, desired_kl=None))
+    assert len(grads) == 2, "optimizer.step()을 미니배치마다 한 번씩 불러야 합니다."
+    assert torch.allclose(grads[0], grads[1], rtol=1e-3, atol=1e-6), (
+        "같은 경험으로 두 번 구한 기울기가 다릅니다. 미니배치마다 optimizer.zero_grad()를 부르는지, "
+        "다섯 개의 값을 모두 같은 인덱스로 고르는지 확인하세요."
+    )
+
+
+def test_update_info_is_mean_over_minibatches():
+    # 학습 속도가 0이면 신경망이 바뀌지 않으므로, 미니배치 4개의 가치 손실 평균은 전체 배치의 가치 손실과 같다.
+    torch.manual_seed(0)
+    actor, critic, _ = _models()
+    optimizer = torch.optim.SGD(list(actor.parameters()) + list(critic.parameters()), lr=0.0)
+    batch = _batch(actor, torch.randn(64, 4))
+    batch["log_probs"] = batch["log_probs"] - 0.25  # 확률 비율이 모두 e^0.25 = 1.28이 된다
+    with torch.no_grad():
+        expected = ((critic(batch["obs"]) - batch["returns"]) ** 2).mean().item()
+    info = ppo_update(actor, critic, optimizer, batch, PPOConfig(num_epochs=1, desired_kl=None))
+    assert math.isclose(info["value_loss"], expected, rel_tol=1e-4), "info는 모든 미니배치의 평균이어야 합니다."
+    assert info["clip_fraction"] == 1.0, "비율이 모두 1.28이므로 잘림 범위 0.2에서는 전부 잘려야 합니다."
+    info = ppo_update(actor, critic, optimizer, batch, PPOConfig(num_epochs=1, desired_kl=None, clip_param=0.5))
+    assert info["clip_fraction"] == 0.0, "ppo_loss에 숫자를 직접 적지 말고 cfg.clip_param을 넘겨야 합니다."

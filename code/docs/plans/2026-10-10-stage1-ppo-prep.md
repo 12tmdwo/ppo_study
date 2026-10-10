@@ -1633,3 +1633,14 @@ git commit -m "docs: add glossary and hand off stage 1 blanks"
 - Global Constraints의 설정값 중 "학습 속도 0.001 고정"은 "처음 0.001, 이후 KL을 보고 자동 조절"로 바뀌었다.
 
 이 문서 본문에 적힌 `ppo.py`, `test_ppo.py`, `train.py`의 코드는 바뀌기 전의 것이다. 지금의 정확한 내용은 저장소의 파일을 기준으로 한다.
+
+### 2026-10-10: 마지막 검토 결과 반영
+
+다른 검토자의 전체 검토에서, 채점기를 전부 통과하는데 학습은 실패하는 구현이 발견되었다. 자세한 과정은 DEVLOG 6장의 [오류-2]에 있다.
+
+- 채점기에 검사 5개를 추가했다 (38개 → 43개): `test_gae_done_at_last_step_ignores_last_value`, `test_update_changes_learning_rate_every_minibatch`, `test_update_fits_value_targets`, `test_update_does_not_accumulate_gradients`, `test_update_info_is_mean_over_minibatches`
+- 학습 속도를 비교하는 검사에 여유(`rel_tol=1e-6`)를 두었고, 엔트로피의 모양이 틀렸을 때의 안내 문구를 구체적으로 고쳤다.
+- `ppo.py`의 빈칸 바-2 설명에서 힌트 세 곳을 고쳤다 (`obs`와 `B`를 얻는 방법, 값 목록을 합치는 방법, 다섯 개의 값을 같은 인덱스로 고르라는 주의).
+- `plot_compare.py`에 `mean_curve`를 추가해서, 평균 곡선을 같은 반복 번호끼리 계산하게 했다 (검사 2개 추가).
+- 전체 검사는 56개이다 (채점기 43개, `model.py` 8개, `plot_compare.py` 5개).
+- 설계 문서 7장의 표에 `rsl_rl`과 실제로 다른 점 세 가지를 적었고, DEVLOG의 숫자와 표현 몇 곳을 바로잡았다.

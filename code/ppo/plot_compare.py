@@ -54,6 +54,13 @@ def load_curve(run_dir, tag):
     return [s.step for s in scalars], [s.value for s in scalars]
 
 
+def mean_curve(seed_curves):
+    """씨앗값별 곡선 [(반복 번호 목록, 값 목록), ...]에서, 모든 씨앗값에 있는 반복 번호만 골라 평균 곡선을 만든다."""
+    tables = [dict(zip(steps, values)) for steps, values in seed_curves]
+    common = sorted(set.intersection(*(set(table) for table in tables)))
+    return common, [sum(table[step] for table in tables) / len(tables) for step in common]
+
+
 def passed(final_reward, final_length):
     """통과 기준: 평균 총점 4.5 이상, 평균 판 길이 290 이상."""
     return final_reward >= 4.5 and final_length >= 290.0
@@ -83,11 +90,11 @@ def main():
                 continue
             for steps, values in seed_curves:
                 ax.plot(steps, values, color=color, linewidth=1, alpha=0.4)
-            length = min(len(values) for _, values in seed_curves)  # 길이가 다르면 짧은 쪽에 맞춘다
-            mean = [sum(values[i] for _, values in seed_curves) / len(seed_curves) for i in range(length)]
-            ax.plot(seed_curves[0][0][:length], mean, color=color, linewidth=2,
-                    solid_capstyle="round", solid_joinstyle="round",
-                    label=f"{name} (씨앗값 {len(seed_curves)}개 평균, 최종 {mean[-1]:.2f})")
+            steps, mean = mean_curve(seed_curves)  # 같은 반복 번호끼리 평균을 낸다
+            if steps:
+                ax.plot(steps, mean, color=color, linewidth=2,
+                        solid_capstyle="round", solid_joinstyle="round",
+                        label=f"{name} (씨앗값 {len(seed_curves)}개 평균, 최종 {mean[-1]:.2f})")
         ax.set_ylabel(ylabel, color=TEXT)
         ax.grid(True, color=GRID, linewidth=1)
         ax.set_axisbelow(True)

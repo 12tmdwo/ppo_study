@@ -224,22 +224,24 @@ def ppo_update(actor, critic, optimizer, batch, cfg):
     할 일
         1. 이득을 배치 전체 기준으로 정규화한다: (이득 - 평균) / (표준편차 + 1e-8)
         2. num_epochs번 반복한다.
-            2-1. torch.randperm(B, device=obs.device)로 순서를 섞는다.
+            2-1. torch.randperm(B, device=obs.device)로 순서를 섞는다. (obs = batch["obs"], B = obs.shape[0])
             2-2. 섞은 순서를 num_mini_batches개로 나누고, 미니배치마다 아래를 수행한다.
                 - actor와 critic을 미니배치의 obs로 한 번씩 부른다.
                 - evaluate_action으로 새 로그 확률과 엔트로피를 구한다.
                 - ppo_loss로 손실을 구한다.
                 - adapt_learning_rate(optimizer, info["approx_kl"], cfg.desired_kl)로 학습 속도를 조절한다.
-                  (info는 방금 ppo_loss가 돌려준 것이다)
+                  (info는 방금 ppo_loss가 돌려준 것이다. 반복이 다 끝난 뒤가 아니라 미니배치마다 한 번씩 부른다)
                 - optimizer.zero_grad() -> loss.backward()
                 - torch.nn.utils.clip_grad_norm_(값 목록, cfg.max_grad_norm)으로 기울기 크기를 자른다.
-                  (값 목록 = actor와 critic의 parameters()를 합친 것)
+                  (값 목록 = list(actor.parameters()) + list(critic.parameters()))
                 - optimizer.step()
         3. 미니배치마다 받은 info를 평균 내서 돌려준다.
 
     힌트
         - B는 항상 num_mini_batches로 나누어떨어진다. 미니배치 크기 = B // cfg.num_mini_batches
-        - 미니배치 고르기: 순서[i * 크기 : (i + 1) * 크기]를 인덱스로 써서 batch["obs"][인덱스]
+        - 미니배치 고르기: 순서[i * 크기 : (i + 1) * 크기]를 인덱스로 쓴다. 예: batch["obs"][인덱스]
+        - obs, actions, log_probs, advantages, returns 다섯 개를 모두 같은 인덱스로 골라야 한다.
+          하나라도 빠뜨리면 경험의 짝이 어긋나서, 오류는 나지 않는데 학습이 되지 않는다.
         - 1e-8을 더하는 이유: 모든 이득이 같으면 표준편차가 0이 되어 0으로 나누게 된다.
 
     채점: pytest ppo/test_ppo.py -k update
