@@ -5,7 +5,8 @@
     pytest ppo/test_ppo.py -k sample     (다-2 sample_action)
     pytest ppo/test_ppo.py -k gae        (라   compute_gae)
     pytest ppo/test_ppo.py -k loss       (마   ppo_loss)
-    pytest ppo/test_ppo.py -k update     (바   ppo_update)
+    pytest ppo/test_ppo.py -k adapt      (바-1 adapt_learning_rate)
+    pytest ppo/test_ppo.py -k update     (바-2 ppo_update)
 전체 채점
     pytest ppo/test_ppo.py
 """
@@ -16,7 +17,10 @@ import torch
 from torch.distributions import Normal
 
 from model import Actor, Critic
-from ppo import PPOConfig, compute_gae, evaluate_action, ppo_loss, ppo_update, sample_action
+from ppo import (
+    LR_FACTOR, LR_MAX, LR_MIN, PPOConfig,
+    adapt_learning_rate, compute_gae, evaluate_action, ppo_loss, ppo_update, sample_action,
+)
 
 INFO_KEYS = {"policy_loss", "value_loss", "entropy", "approx_kl", "clip_fraction"}
 
@@ -240,7 +244,60 @@ def test_loss_info_values_and_types():
     assert math.isclose(info["approx_kl"], (0.5 - math.log(1.5)) / 2, abs_tol=1e-6)
 
 
-# ======================= 바. ppo_update =======================
+# ======================= 바-1. adapt_learning_rate =======================
+
+def _optimizer(lr):
+    return torch.optim.Adam([torch.nn.Parameter(torch.zeros(1))], lr=lr)
+
+
+def _lr(optimizer):
+    return optimizer.param_groups[0]["lr"]
+
+
+def test_adapt_learning_rate_lowers_when_change_too_big():
+    optimizer = _optimizer(1e-3)
+    new_lr = adapt_learning_rate(optimizer, approx_kl=0.03, desired_kl=0.01)  # 0.03 > 0.01 * 2
+    assert math.isclose(_lr(optimizer), 1e-3 / LR_FACTOR), "KL이 목표의 2배보다 크면 학습 속도를 LR_FACTOR로 나눠야 합니다."
+    assert math.isclose(new_lr, _lr(optimizer)), "조절한 뒤의 학습 속도를 돌려줘야 합니다."
+
+
+def test_adapt_learning_rate_raises_when_change_too_small():
+    optimizer = _optimizer(1e-3)
+    adapt_learning_rate(optimizer, approx_kl=0.001, desired_kl=0.01)  # 0 < 0.001 < 0.01 / 2
+    assert math.isclose(_lr(optimizer), 1e-3 * LR_FACTOR), "KL이 목표의 절반보다 작으면 학습 속도에 LR_FACTOR를 곱해야 합니다."
+
+
+def test_adapt_learning_rate_keeps_when_change_is_fine():
+    for kl in (0.01, 0.02, 0.005, 0.0):  # 목표 근처, 경계값 두 개, 아직 신경망이 안 바뀐 경우(0)
+        optimizer = _optimizer(1e-3)
+        adapt_learning_rate(optimizer, approx_kl=kl, desired_kl=0.01)
+        assert _lr(optimizer) == 1e-3, f"KL이 {kl}일 때는 학습 속도를 바꾸지 않아야 합니다."
+
+
+def test_adapt_learning_rate_respects_limits():
+    optimizer = _optimizer(LR_MAX)
+    adapt_learning_rate(optimizer, approx_kl=0.001, desired_kl=0.01)
+    assert _lr(optimizer) == LR_MAX, "학습 속도는 LR_MAX보다 커지면 안 됩니다."
+    optimizer = _optimizer(LR_MIN)
+    adapt_learning_rate(optimizer, approx_kl=0.5, desired_kl=0.01)
+    assert _lr(optimizer) == LR_MIN, "학습 속도는 LR_MIN보다 작아지면 안 됩니다."
+
+
+def test_adapt_learning_rate_off_without_target():
+    optimizer = _optimizer(1e-3)
+    new_lr = adapt_learning_rate(optimizer, approx_kl=0.5, desired_kl=None)
+    assert _lr(optimizer) == 1e-3 and new_lr == 1e-3, "desired_kl이 None이면 아무것도 바꾸지 않아야 합니다."
+
+
+def test_adapt_learning_rate_applies_to_every_group():
+    first, second = torch.nn.Parameter(torch.zeros(1)), torch.nn.Parameter(torch.zeros(1))
+    optimizer = torch.optim.Adam([{"params": [first]}, {"params": [second]}], lr=1e-3)
+    adapt_learning_rate(optimizer, approx_kl=0.03, desired_kl=0.01)
+    assert all(math.isclose(group["lr"], 1e-3 / LR_FACTOR) for group in optimizer.param_groups), \
+        "optimizer.param_groups의 모든 묶음에 새 학습 속도를 넣어야 합니다."
+
+
+# ======================= 바-2. ppo_update =======================
 
 def _models(obs_dim=4, lr=1e-3, sgd=False):
     actor, critic = Actor(obs_dim, 1), Critic(obs_dim)
@@ -348,3 +405,18 @@ def test_update_clips_gradient_norm():
     ppo_update(actor, critic, optimizer, batch, PPOConfig(num_epochs=1, num_mini_batches=1, max_grad_norm=1e-3))
     moved = (_flat_params(actor, critic) - before).norm().item()
     assert 0 < moved <= 1.5e-3, f"기울기 크기를 max_grad_norm으로 잘라야 합니다 (바뀐 양 {moved:.3g})."
+
+
+def test_update_changes_learning_rate_by_kl():
+    def run(log_prob_shift, desired_kl):
+        torch.manual_seed(0)
+        actor, critic, optimizer = _models()
+        batch = _batch(actor, torch.randn(64, 4))
+        batch["log_probs"] = batch["log_probs"] + log_prob_shift  # 예전 로그 확률을 일부러 어긋나게 해서 KL의 크기를 정한다
+        ppo_update(actor, critic, optimizer, batch, PPOConfig(num_epochs=1, desired_kl=desired_kl))
+        return optimizer.param_groups[0]["lr"]
+
+    msg = "ppo_update 안에서 미니배치마다 adapt_learning_rate를 불러야 합니다."
+    assert run(-1.0, 0.01) < 1e-3, "KL이 클 때 학습 속도가 내려가야 합니다. " + msg
+    assert run(-0.01, 0.01) > 1e-3, "KL이 아주 작을 때 학습 속도가 올라가야 합니다. " + msg
+    assert run(-1.0, None) == 1e-3, "cfg.desired_kl이 None이면 학습 속도가 그대로여야 합니다."

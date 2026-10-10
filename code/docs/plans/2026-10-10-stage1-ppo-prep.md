@@ -1617,3 +1617,19 @@ git commit -m "docs: add glossary and hand off stage 1 blanks"
 2. 지금 `pytest ppo/test_ppo.py`를 실행하면 31개가 모두 실패하는 것이 정상이라는 점.
 3. 첫 번째 빈칸(다-1 `evaluate_action`)의 원리 설명: 정규분포가 무엇인지, 로그 확률을 왜 쓰는지, 수식의 각 항이 무엇을 뜻하는지.
 4. 빈칸을 채운 뒤 실행할 채점 명령: `pytest ppo/test_ppo.py -k evaluate`
+
+---
+
+## 변경 기록
+
+### 2026-10-10: 학습 속도 자동 조절 추가 (작업 5에서 발견)
+
+작업 5의 사전 확인에서, 정답 구현이 씨앗값 3에서 통과 기준에 못 미쳤다(평균 총점 4.61, 평균 판 길이 282.0). 원인은 학습 속도를 0.001로 고정한 설정이었다. 사용자와 상의해서 아래와 같이 바꿨다. 자세한 과정은 DEVLOG 6장의 [오류-1]에 있다.
+
+- 새 빈칸 `adapt_learning_rate(optimizer, approx_kl, desired_kl) -> 학습 속도`를 "바-1"로 추가했다. 기존 `ppo_update`는 "바-2"가 되었고, 미니배치마다 `ppo_loss` 뒤에 `adapt_learning_rate`를 부른다.
+- `PPOConfig`에 `desired_kl = 0.01`을 추가했다. `ppo.py`에 상수 `LR_MIN = 1e-5`, `LR_MAX = 1e-2`, `LR_FACTOR = 1.5`를 추가했다.
+- `train.py`는 `cfg.learning_rate` 대신 실제 학습 속도(`optimizer.param_groups[0]["lr"]`)를 기록하고 화면에도 보여준다.
+- 빈칸은 5개에서 6개로, 채점기 검사는 31개에서 38개로 늘었다(학습 속도 조절 검사 6개, 고치기 반복 검사 1개 추가). 전체 검사는 49개이다(채점기 38개, `model.py` 8개, `plot_compare.py` 3개).
+- Global Constraints의 설정값 중 "학습 속도 0.001 고정"은 "처음 0.001, 이후 KL을 보고 자동 조절"로 바뀌었다.
+
+이 문서 본문에 적힌 `ppo.py`, `test_ppo.py`, `train.py`의 코드는 바뀌기 전의 것이다. 지금의 정확한 내용은 저장소의 파일을 기준으로 한다.

@@ -6,7 +6,7 @@
 전체 흐름 (150번 반복)
     1) 경험 모으기 : 환경 4096개를 16걸음씩 진행하며 관찰값·행동·점수를 저장소에 담는다.
     2) 이득 계산   : compute_gae  (빈칸 라)
-    3) 신경망 수정 : ppo_update   (빈칸 바)
+    3) 신경망 수정 : ppo_update   (빈칸 바-2. 그 안에서 바-1이 학습 속도를 조절한다)
     4) 기록        : 평균 총점 등을 화면과 tensorboard에 남긴다.
 """
 import argparse
@@ -116,18 +116,19 @@ def main():
                 )
 
             # ---------- 3) 신경망 수정 ----------
-            info = ppo_update(actor, critic, optimizer, storage.flatten(advantages, returns), cfg)  # 빈칸 바
+            info = ppo_update(actor, critic, optimizer, storage.flatten(advantages, returns), cfg)  # 빈칸 바-2
             storage.clear()
 
             # ---------- 4) 기록 ----------
             fps = NUM_STEPS * num_envs / (time.time() - start)
             mean_std = actor.std.mean().item()
+            learning_rate = optimizer.param_groups[0]["lr"]  # 빈칸 바-1이 조절한 지금의 학습 속도
             writer.add_scalar("Loss/value", info["value_loss"], it)
             writer.add_scalar("Loss/surrogate", info["policy_loss"], it)
             writer.add_scalar("Loss/entropy", info["entropy"], it)
             writer.add_scalar("Loss/approx_kl", info["approx_kl"], it)
             writer.add_scalar("Loss/clip_fraction", info["clip_fraction"], it)
-            writer.add_scalar("Loss/learning_rate", cfg.learning_rate, it)
+            writer.add_scalar("Loss/learning_rate", learning_rate, it)
             writer.add_scalar("Policy/mean_std", mean_std, it)
             writer.add_scalar("Perf/total_fps", fps, it)
             line = f"[{it + 1:3d}/{args.max_iterations}]"
@@ -139,7 +140,7 @@ def main():
                 line += f" 평균 총점 {mean_return:6.2f} | 평균 판 길이 {mean_length:6.1f} |"
             line += (
                 f" 표준편차 {mean_std:.3f} | KL {info['approx_kl']:.4f}"
-                f" | 잘린 비율 {info['clip_fraction']:.2f} | 초당 {fps:,.0f}걸음"
+                f" | 잘린 비율 {info['clip_fraction']:.2f} | 학습 속도 {learning_rate:.5f} | 초당 {fps:,.0f}걸음"
             )
             print(line)
 

@@ -1,12 +1,13 @@
 """PPO의 핵심 (직접 작성하는 파일).
 
-아래 빈칸 함수 5개를 위에서부터 순서대로 채운다.
+아래 빈칸 함수 6개를 위에서부터 순서대로 채운다.
 
-    다-1. evaluate_action   행동의 로그 확률과 엔트로피 계산
-    다-2. sample_action     행동 뽑기
-    라.   compute_gae       이득 계산
-    마.   ppo_loss          PPO 손실
-    바.   ppo_update        고치기 반복
+    다-1. evaluate_action       행동의 로그 확률과 엔트로피 계산
+    다-2. sample_action         행동 뽑기
+    라.   compute_gae           이득 계산
+    마.   ppo_loss              PPO 손실
+    바-1. adapt_learning_rate   학습 속도 조절
+    바-2. ppo_update            고치기 반복
 
 빈칸 하나를 채울 때마다 그 함수 설명 끝에 적힌 채점 명령을 실행한다.
 
@@ -34,7 +35,14 @@ class PPOConfig:
     num_epochs: int = 5          # 모은 경험을 몇 번 반복해서 쓸지
     num_mini_batches: int = 4    # 한 번 반복할 때 경험을 몇 묶음으로 나눌지
     max_grad_norm: float = 1.0   # 기울기 크기의 최대값
-    learning_rate: float = 1e-3  # 학습 속도
+    learning_rate: float = 1e-3  # 처음 학습 속도 (학습하는 동안 바-1이 자동으로 조절한다)
+    desired_kl: float | None = 0.01  # 목표 KL: 신경망이 한 번에 이 정도만 바뀌게 한다. None이면 학습 속도를 조절하지 않는다
+
+
+# 학습 속도 조절(빈칸 바-1)에서 쓰는 값. (완성된 코드: 고칠 필요 없음)
+LR_MIN = 1e-5    # 학습 속도의 최소값
+LR_MAX = 1e-2    # 학습 속도의 최대값
+LR_FACTOR = 1.5  # 한 번에 올리거나 내리는 배율
 
 
 def evaluate_action(mean, std, action):
@@ -166,8 +174,39 @@ def ppo_loss(new_log_prob, old_log_prob, advantages, new_values, returns, entrop
     raise NotImplementedError("빈칸 마: ppo.py의 ppo_loss를 채워주세요.")
 
 
+def adapt_learning_rate(optimizer, approx_kl, desired_kl):
+    """[빈칸 바-1] 신경망이 바뀐 정도(KL)를 보고 학습 속도를 조절한다.
+
+    학습 속도가 너무 크면 신경망이 한 번에 많이 바뀌어서 학습이 무너지고,
+    너무 작으면 거의 바뀌지 않아서 학습이 느리다. 그래서 방금 잰 KL이 목표(desired_kl)보다
+    많이 크면 속도를 내리고, 많이 작으면 속도를 올린다. rsl_rl도 같은 방법을 쓴다.
+
+    입력
+        optimizer  : 최적화 도구. 지금 학습 속도는 optimizer.param_groups[0]["lr"]에 들어 있다.
+        approx_kl  : 방금 ppo_loss가 계산한 KL 근사값 (파이썬 숫자)
+        desired_kl : 목표 KL (예: 0.01). None이면 아무것도 바꾸지 않는다.
+    출력
+        조절한 뒤의 학습 속도 (파이썬 숫자). 바꾸지 않았으면 원래 학습 속도.
+
+    규칙
+        approx_kl > desired_kl * 2      -> 학습 속도를 LR_FACTOR로 나눈다. 단, LR_MIN보다 작아지지 않게 한다.
+        0 < approx_kl < desired_kl / 2  -> 학습 속도에 LR_FACTOR를 곱한다. 단, LR_MAX보다 커지지 않게 한다.
+        그 밖의 경우                    -> 그대로 둔다.
+
+    힌트
+        - KL이 정확히 0인 경우는 신경망이 아직 한 번도 바뀌지 않은 것이므로, 속도를 올리지 않는다.
+        - 둘 중 큰 값과 작은 값: max(a, b), min(a, b)
+        - 바꾼 학습 속도는 모든 묶음에 넣어야 실제로 적용된다.
+              for group in optimizer.param_groups:
+                  group["lr"] = 새 학습 속도
+
+    채점: pytest ppo/test_ppo.py -k adapt
+    """
+    raise NotImplementedError("빈칸 바-1: ppo.py의 adapt_learning_rate를 채워주세요.")
+
+
 def ppo_update(actor, critic, optimizer, batch, cfg):
-    """[빈칸 바] 모은 경험을 작은 묶음으로 나누어, 신경망을 여러 번 수정한다.
+    """[빈칸 바-2] 모은 경험을 작은 묶음으로 나누어, 신경망을 여러 번 수정한다.
 
     경험 B개를 한꺼번에 쓰지 않고, 순서를 섞어 미니배치로 나눈 뒤 미니배치마다 한 번씩 수정한다.
     이 과정을 num_epochs번 반복한다.
@@ -190,6 +229,8 @@ def ppo_update(actor, critic, optimizer, batch, cfg):
                 - actor와 critic을 미니배치의 obs로 한 번씩 부른다.
                 - evaluate_action으로 새 로그 확률과 엔트로피를 구한다.
                 - ppo_loss로 손실을 구한다.
+                - adapt_learning_rate(optimizer, info["approx_kl"], cfg.desired_kl)로 학습 속도를 조절한다.
+                  (info는 방금 ppo_loss가 돌려준 것이다)
                 - optimizer.zero_grad() -> loss.backward()
                 - torch.nn.utils.clip_grad_norm_(값 목록, cfg.max_grad_norm)으로 기울기 크기를 자른다.
                   (값 목록 = actor와 critic의 parameters()를 합친 것)
@@ -203,4 +244,4 @@ def ppo_update(actor, critic, optimizer, batch, cfg):
 
     채점: pytest ppo/test_ppo.py -k update
     """
-    raise NotImplementedError("빈칸 바: ppo.py의 ppo_update를 채워주세요.")
+    raise NotImplementedError("빈칸 바-2: ppo.py의 ppo_update를 채워주세요.")
